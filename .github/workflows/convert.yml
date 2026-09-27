@@ -1,0 +1,89 @@
+name: Convert Audio / YouTube to NBS (NoteBot)
+
+on:
+  workflow_dispatch:
+    inputs:
+      audio_url:
+        description: 'Link YouTube hoặc Direct Audio URL (MP3/WAV/MID)'
+        required: true
+        default: 'https://youtu.be/...'
+      song_name:
+        description: 'Tên bài hát'
+        required: false
+        default: 'Custom_Song'
+      target_tps:
+        description: 'Tốc độ Minecraft Ticks (10 TPS chậm an toàn, 20 TPS chuẩn)'
+        required: false
+        default: '20'
+      vulcan_safe:
+        description: 'Bật chế độ an toàn chống Anti-Cheat Vulcan (giới hạn tối đa 3 nốt/tick)'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yt-dlp mido pynbs basic-pitch
+
+      - name: Download Audio via yt-dlp
+        run: |
+          mkdir -p input_audio output_nbs
+          echo "Downloading from: ${{ github.event.inputs.audio_url }}"
+          yt-dlp -x --audio-format wav --audio-quality 0 -o "input_audio/song.%(ext)s" "${{ github.event.inputs.audio_url }}"
+
+      - name: Transcribe Audio to MIDI (Spotify Basic-Pitch AI)
+        run: |
+          if [ -f "input_audio/song.mid" ]; then
+            echo "Direct MIDI detected, skipping audio transcription."
+          else
+            echo "Transcribing WAV to MIDI with Basic Pitch..."
+            basic-pitch input_audio input_audio/song.wav
+          fi
+
+      - name: Convert MIDI to NBS for Meteor NoteBot
+        run: |
+          SONG_NAME="${{ github.event.inputs.song_name }}"
+          SAFE_FLAG=""
+          if [ "${{ github.event.inputs.vulcan_safe }}" = "true" ]; then
+            SAFE_FLAG="--vulcan-safe"
+          fi
+          
+          python converter.py "input_audio/song_basic_pitch.mid" "songs/${SONG_NAME}.nbs" --name "${SONG_NAME}" --tps ${{ github.event.inputs.target_tps }} ${SAFE_FLAG}
+          cp "songs/${SONG_NAME}.nbs" "output_nbs/${SONG_NAME}.nbs"
+
+      - name: Commit and Push NBS to Repo
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add songs/
+          git commit -m "Auto-convert song: ${{ github.event.inputs.song_name }}" || echo "No changes to commit"
+          git push || echo "Push skipped"
+
+      - name: Upload NBS & MIDI as Artifacts (1-Click Download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ github.event.inputs.song_name }}_NBS"
+          path: |
+            output_nbs/*.nbs
+            input_audio/*.mid
